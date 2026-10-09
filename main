@@ -1,0 +1,1753 @@
+-- Bring Vortex v5.5 — Full Complete Edition + Modern Collapsible UI + Drop Fix + Fling Bypass
+-- 5 Modes: Vortex | Tornado | Ring | Sphere | Single Point
+-- Full 12 Presets + Orientation (Ngang/Dọc/Nghiêng 45°) + Full Save/Load Config + Collapsible Tabs
+
+-- ============================================================
+--  Services
+-- ============================================================
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local LocalPlayer      = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local Workspace        = game:GetService("Workspace")
+local Camera           = Workspace.CurrentCamera
+local TweenService     = game:GetService("TweenService")
+local HttpService      = game:GetService("HttpService")
+
+-- ============================================================
+--  NETWORK RETENTION & CONTROLLER (FIX DROP & MEMORY LEAK)
+-- ============================================================
+if not getgenv().Network then
+    getgenv().Network = {
+        BaseParts = {},
+        Velocity = Vector3.new(14.4626, 14.4626, 14.4626),
+        Active = false
+    }
+
+    getgenv().Network.RetainPart = function(p)
+        if p:IsA("BasePart") and p:IsDescendantOf(workspace) then
+            getgenv().Network.BaseParts[p] = true
+            p.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+            p.CanCollide = false
+            p.AncestryChanged:Once(function(_, parent)
+                if not parent then
+                    getgenv().Network.BaseParts[p] = nil
+                end
+            end)
+        end
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if not getgenv().Network.Active then return end
+        pcall(function()
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+        end)
+        for p in pairs(getgenv().Network.BaseParts) do
+            if p:IsDescendantOf(workspace) then
+                p.Velocity = getgenv().Network.Velocity
+            else
+                getgenv().Network.BaseParts[p] = nil
+            end
+        end
+    end)
+end
+
+local Network = getgenv().Network
+
+-- ============================================================
+--  CONFIG
+-- ============================================================
+local ARRIVE_DIST    = 1.5
+local SPIN_SPEED     = 3
+local SEGMENTS       = 5
+local SPACING        = 20
+local MAX_VEL        = 5
+local SCAN_RADIUS    = 150
+local SCAN_INTERVAL  = 0.25
+local FLY_TICK       = 1/60
+local HOLD_TICK      = 1/30
+local MAX_TRACK      = 1500
+local MOUSE_MAX_DIST = 500
+local MARKER_SIZE    = Vector3.new(3, 3, 3)
+local MARKER_COLOR   = Color3.fromRGB(105, 115, 255)
+local MARKER_MAT     = Enum.Material.Neon
+local orientation    = "vertical"
+local rotated45      = false
+local partSpin       = true
+local showPreview    = true
+local TILT_SIGN      = -1
+local bringKey       = Enum.KeyCode.RightControl
+local customGrid     = nil
+local autoFlingBypass = true
+
+local activeMode     = "none"
+
+local TORNADO_RINGS      = 8
+local TORNADO_PER_RING   = 12
+local TORNADO_HEIGHT     = 80
+local TORNADO_TOP_RADIUS = 40
+local TORNADO_BOT_RADIUS = 5
+local TORNADO_SPIN_SPEED = 8
+
+local RING_RADIUS     = 25
+local RING_POINTS     = 20
+local RING_SPIN_SPEED = 10
+local RING_HEIGHT     = 5
+
+local SPHERE_RADIUS     = 25
+local SPHERE_RINGS      = 6
+local SPHERE_PER_RING   = 10
+local SPHERE_SPIN_SPEED = 3
+
+local SP_ANCHOR       = "front"
+local SP_OFFSET_DIST  = 8
+local SP_OFFSET_UP    = 0
+local SP_TIGHT        = true
+local SP_ORBIT        = false
+local SP_ORBIT_SPEED  = 2
+
+-- ============================================================
+--  THEME & STYLES (Modern Dark Acrylic)
+-- ============================================================
+local T = {
+    bg          = Color3.fromRGB(13, 14, 18),
+    surface     = Color3.fromRGB(20, 22, 28),
+    card        = Color3.fromRGB(26, 28, 36),
+    cardHeader  = Color3.fromRGB(32, 35, 46),
+    elevated    = Color3.fromRGB(40, 44, 58),
+    border      = Color3.fromRGB(50, 54, 70),
+    text        = Color3.fromRGB(245, 246, 250),
+    textDim     = Color3.fromRGB(145, 150, 170),
+    accent      = Color3.fromRGB(105, 115, 255),
+    accentHover = Color3.fromRGB(125, 135, 255),
+    green       = Color3.fromRGB(70, 215, 130),
+    red         = Color3.fromRGB(240, 80, 80),
+    orange      = Color3.fromRGB(245, 160, 60),
+    toggleOff   = Color3.fromRGB(42, 45, 58),
+    toggleOn    = Color3.fromRGB(105, 115, 255),
+    cellOn      = Color3.fromRGB(105, 115, 255),
+    cellOff     = Color3.fromRGB(34, 37, 48),
+}
+
+local ANIM_SPRING = TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local ANIM_FAST   = TweenInfo.new(0.18, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
+local ANIM_BOUNCE = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+-- ============================================================
+--  VORTEX OFFSETS
+-- ============================================================
+local VORTEX_OFFSETS = {}
+local function buildVortexOffsets()
+    local offs = {}
+    local S, N = SPACING, SEGMENTS
+    for arm = 1, 4 do
+        local baseAngle = (arm - 1) * (math.pi / 2)
+        for i = 1, N do
+            local dist = i * S
+            local angle = baseAngle + (i * 0.12)
+            table.insert(offs, Vector2.new(math.cos(angle) * dist, math.sin(angle) * dist))
+        end
+    end
+    return offs
+end
+VORTEX_OFFSETS = buildVortexOffsets()
+
+-- ============================================================
+--  SAVE / LOAD
+-- ============================================================
+local SAVE_KEY = "BringVortexConfig_v52"
+
+local function saveConfig()
+    pcall(function()
+        if not writefile then return end
+        writefile(SAVE_KEY .. ".json", HttpService:JSONEncode({
+            segments = SEGMENTS, spacing = SPACING, maxVel = MAX_VEL,
+            spinSpeed = SPIN_SPEED, orientation = orientation, rotated45 = rotated45,
+            partSpin = partSpin, showPreview = showPreview,
+            bringKey = bringKey and bringKey.Name or nil, customGrid = customGrid,
+            tornadoRings = TORNADO_RINGS, tornadoPerRing = TORNADO_PER_RING,
+            tornadoHeight = TORNADO_HEIGHT, tornadoTopR = TORNADO_TOP_RADIUS,
+            tornadoBotR = TORNADO_BOT_RADIUS, tornadoSpin = TORNADO_SPIN_SPEED,
+            ringRadius = RING_RADIUS, ringPoints = RING_POINTS,
+            ringSpin = RING_SPIN_SPEED, ringHeight = RING_HEIGHT,
+            sphereRadius = SPHERE_RADIUS, sphereRings = SPHERE_RINGS,
+            spherePerRing = SPHERE_PER_RING, sphereSpin = SPHERE_SPIN_SPEED,
+            spAnchor = SP_ANCHOR, spOffset = SP_OFFSET_DIST, spOffsetUp = SP_OFFSET_UP,
+            spTight = SP_TIGHT, spOrbit = SP_ORBIT, spOrbitSpeed = SP_ORBIT_SPEED,
+        }))
+    end)
+end
+
+pcall(function()
+    if isfile and isfile(SAVE_KEY .. ".json") then
+        local d = HttpService:JSONDecode(readfile(SAVE_KEY .. ".json"))
+        if d.segments    then SEGMENTS = math.clamp(math.floor(d.segments), 1, 50) end
+        if d.spacing     then SPACING  = math.clamp(math.floor(d.spacing), 2, 200) end
+        if d.maxVel      then MAX_VEL  = math.clamp(d.maxVel, 0.1, 500) end
+        if d.spinSpeed   then SPIN_SPEED = math.clamp(d.spinSpeed, 0.1, 100) end
+        if d.orientation then orientation = d.orientation end
+        if d.rotated45 ~= nil then rotated45 = d.rotated45 end
+        if d.partSpin ~= nil then partSpin = d.partSpin end
+        if d.showPreview ~= nil then showPreview = d.showPreview end
+        if d.bringKey then
+            local ok, kc = pcall(function() return Enum.KeyCode[d.bringKey] end)
+            if ok and kc then bringKey = kc end
+        end
+        if d.customGrid then customGrid = d.customGrid end
+        if d.tornadoRings then TORNADO_RINGS = math.clamp(d.tornadoRings, 2, 30) end
+        if d.tornadoPerRing then TORNADO_PER_RING = math.clamp(d.tornadoPerRing, 4, 40) end
+        if d.tornadoHeight then TORNADO_HEIGHT = math.clamp(d.tornadoHeight, 10, 300) end
+        if d.tornadoTopR then TORNADO_TOP_RADIUS = math.clamp(d.tornadoTopR, 5, 200) end
+        if d.tornadoBotR then TORNADO_BOT_RADIUS = math.clamp(d.tornadoBotR, 1, 100) end
+        if d.tornadoSpin then TORNADO_SPIN_SPEED = math.clamp(d.tornadoSpin, 0.5, 50) end
+        if d.ringRadius then RING_RADIUS = math.clamp(d.ringRadius, 5, 200) end
+        if d.ringPoints then RING_POINTS = math.clamp(d.ringPoints, 4, 60) end
+        if d.ringSpin then RING_SPIN_SPEED = math.clamp(d.ringSpin, 0.5, 50) end
+        if d.ringHeight then RING_HEIGHT = math.clamp(d.ringHeight, -50, 50) end
+        if d.sphereRadius then SPHERE_RADIUS = math.clamp(d.sphereRadius, 5, 200) end
+        if d.sphereRings then SPHERE_RINGS = math.clamp(d.sphereRings, 3, 20) end
+        if d.spherePerRing then SPHERE_PER_RING = math.clamp(d.spherePerRing, 4, 30) end
+        if d.sphereSpin then SPHERE_SPIN_SPEED = math.clamp(d.sphereSpin, 0, 20) end
+        if d.spAnchor then SP_ANCHOR = d.spAnchor end
+        if d.spOffset then SP_OFFSET_DIST = math.clamp(d.spOffset, -50, 100) end
+        if d.spOffsetUp then SP_OFFSET_UP = math.clamp(d.spOffsetUp, -50, 50) end
+        if d.spTight ~= nil then SP_TIGHT = d.spTight end
+        if d.spOrbit ~= nil then SP_ORBIT = d.spOrbit end
+        if d.spOrbitSpeed then SP_ORBIT_SPEED = math.clamp(d.spOrbitSpeed, 0, 20) end
+        VORTEX_OFFSETS = buildVortexOffsets()
+    end
+end)
+
+-- ============================================================
+--  HELPERS
+-- ============================================================
+local function tween(obj, info, props)
+    local t = TweenService:Create(obj, info, props); t:Play(); return t
+end
+
+local function create(class, props, children)
+    local obj = Instance.new(class)
+    for k, v in pairs(props or {}) do obj[k] = v end
+    for _, c in ipairs(children or {}) do c.Parent = obj end
+    return obj
+end
+
+local function addCorner(obj, r)
+    local c = Instance.new("UICorner", obj); c.CornerRadius = UDim.new(0, r or 8); return c
+end
+
+local function addStroke(obj, color, thick)
+    local s = Instance.new("UIStroke", obj)
+    s.Color = color or T.border; s.Thickness = thick or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    return s
+end
+
+-- ============================================================
+--  GUI ROOT & MAIN FRAME
+-- ============================================================
+local Gui = create("ScreenGui", {
+    Name = "BringVortexModernGui", Parent = (gethui and gethui()) or game:GetService("CoreGui"),
+    ResetOnSpawn = false,
+})
+
+local Main = create("Frame", {
+    Name = "Main", Parent = Gui, BackgroundColor3 = T.bg,
+    BorderSizePixel = 0, Position = UDim2.new(0.5, -190, 0.5, -350),
+    Size = UDim2.new(0, 380, 0, 700), Active = true, Draggable = true,
+    ClipsDescendants = true,
+})
+addCorner(Main, 14); addStroke(Main, T.border, 1.2)
+
+local titleBar = create("Frame", {
+    Parent = Main, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Size = UDim2.new(1, 0, 0, 46),
+})
+addCorner(titleBar, 14)
+create("Frame", {
+    Parent = titleBar, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Position = UDim2.new(0, 0, 1, -12), Size = UDim2.new(1, 0, 0, 12),
+})
+
+create("TextLabel", {
+    Parent = titleBar, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 0), Size = UDim2.new(0, 24, 1, 0),
+    Font = Enum.Font.GothamBold, Text = "⚡",
+    TextColor3 = T.accent, TextSize = 18,
+})
+create("TextLabel", {
+    Parent = titleBar, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 44, 0, 0), Size = UDim2.new(1, -120, 1, 0),
+    Font = Enum.Font.GothamBold, Text = "Bring Vortex v5.5 (Complete)",
+    TextColor3 = T.text, TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left,
+})
+
+local closeBtn = create("TextButton", {
+    Parent = titleBar, BackgroundColor3 = T.elevated, BorderSizePixel = 0,
+    Position = UDim2.new(1, -34, 0.5, -12), Size = UDim2.new(0, 24, 0, 24),
+    Font = Enum.Font.GothamBold, Text = "✕",
+    TextColor3 = T.textDim, TextSize = 11, AutoButtonColor = false,
+})
+addCorner(closeBtn, 6); addStroke(closeBtn, T.border, 1)
+closeBtn.MouseEnter:Connect(function()
+    tween(closeBtn, ANIM_FAST, { BackgroundColor3 = T.red, TextColor3 = Color3.new(1,1,1) })
+end)
+closeBtn.MouseLeave:Connect(function()
+    tween(closeBtn, ANIM_FAST, { BackgroundColor3 = T.elevated, TextColor3 = T.textDim })
+end)
+
+local minBtn = create("TextButton", {
+    Parent = titleBar, BackgroundColor3 = T.elevated, BorderSizePixel = 0,
+    Position = UDim2.new(1, -64, 0.5, -12), Size = UDim2.new(0, 24, 0, 24),
+    Font = Enum.Font.GothamBold, Text = "–",
+    TextColor3 = T.textDim, TextSize = 14, AutoButtonColor = false,
+})
+addCorner(minBtn, 6); addStroke(minBtn, T.border, 1)
+minBtn.MouseEnter:Connect(function()
+    tween(minBtn, ANIM_FAST, { BackgroundColor3 = T.orange, TextColor3 = Color3.new(1,1,1) })
+end)
+minBtn.MouseLeave:Connect(function()
+    tween(minBtn, ANIM_FAST, { BackgroundColor3 = T.elevated, TextColor3 = T.textDim })
+end)
+
+local content = create("ScrollingFrame", {
+    Parent = Main, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 0, 0, 48), Size = UDim2.new(1, 0, 1, -48),
+    ScrollBarThickness = 3, ScrollBarImageColor3 = T.accent,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y, BorderSizePixel = 0,
+})
+create("UIListLayout", {
+    Parent = content, SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 8), HorizontalAlignment = Enum.HorizontalAlignment.Center,
+})
+local cpad = Instance.new("UIPadding", content)
+cpad.PaddingTop = UDim.new(0, 6); cpad.PaddingBottom = UDim.new(0, 16)
+cpad.PaddingLeft = UDim.new(0, 10); cpad.PaddingRight = UDim.new(0, 10)
+
+local layoutOrder = 0
+local function nextOrder() layoutOrder = layoutOrder + 1; return layoutOrder end
+
+-- ============================================================
+--  COLLAPSIBLE ACCORDION COMPONENT (▼ / ▲)
+-- ============================================================
+local function createCollapsibleSection(title, defaultOpen)
+    local isOpen = defaultOpen == true
+    local sec = create("Frame", {
+        Parent = content, BackgroundColor3 = T.card, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = nextOrder(), ClipsDescendants = true,
+    })
+    addCorner(sec, 10); addStroke(sec, T.border, 1)
+
+    local headBtn = create("TextButton", {
+        Parent = sec, BackgroundColor3 = T.cardHeader, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 36), Text = "", AutoButtonColor = false,
+    })
+    addCorner(headBtn, 10)
+    addStroke(headBtn, T.border, 1)
+
+    create("TextLabel", {
+        Parent = headBtn, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -50, 1, 0),
+        Font = Enum.Font.GothamBold, Text = title,
+        TextColor3 = T.text, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+
+    local arrow = create("TextLabel", {
+        Parent = headBtn, BackgroundTransparency = 1,
+        Position = UDim2.new(1, -28, 0, 0), Size = UDim2.new(0, 20, 1, 0),
+        Font = Enum.Font.GothamBold, Text = isOpen and "▲" or "▼",
+        TextColor3 = T.accent, TextSize = 11,
+    })
+
+    local body = create("Frame", {
+        Parent = sec, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 36), Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, Visible = isOpen,
+    })
+    local bp = Instance.new("UIPadding", body)
+    bp.PaddingTop = UDim.new(0, 8); bp.PaddingBottom = UDim.new(0, 10)
+    bp.PaddingLeft = UDim.new(0, 12); bp.PaddingRight = UDim.new(0, 12)
+    create("UIListLayout", {
+        Parent = body, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6),
+    })
+
+    headBtn.MouseEnter:Connect(function()
+        tween(headBtn, ANIM_FAST, { BackgroundColor3 = T.elevated })
+    end)
+    headBtn.MouseLeave:Connect(function()
+        tween(headBtn, ANIM_FAST, { BackgroundColor3 = T.cardHeader })
+    end)
+
+    headBtn.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        arrow.Text = isOpen and "▲" or "▼"
+        tween(arrow, ANIM_FAST, { TextColor3 = isOpen and T.accentHover or T.textDim })
+        body.Visible = isOpen
+    end)
+
+    return body
+end
+
+-- ============================================================
+--  COMPONENTS: TOGGLE, SLIDER, DROPDOWN, INPUT ROW
+-- ============================================================
+local function createToggle(parent, labelText, default, callback)
+    local state = default == true
+    local holder = create("Frame", {
+        Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34),
+    })
+    create("TextLabel", {
+        Parent = holder, BackgroundTransparency = 1,
+        Size = UDim2.new(1, -60, 1, 0), Font = Enum.Font.GothamMedium,
+        Text = labelText, TextColor3 = T.text, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local track = create("Frame", {
+        Parent = holder, AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 42, 0, 22),
+        BackgroundColor3 = state and T.toggleOn or T.toggleOff,
+    })
+    addCorner(track, 11)
+    local knob = create("Frame", {
+        Parent = track, AnchorPoint = Vector2.new(0, 0.5),
+        Position = state and UDim2.new(1, -20, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
+        Size = UDim2.new(0, 18, 0, 18), BackgroundColor3 = Color3.new(1, 1, 1),
+    })
+    addCorner(knob, 9)
+
+    local btn = create("TextButton", {
+        Parent = holder, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0),
+        Text = "", ZIndex = 5, AutoButtonColor = false,
+    })
+
+    local function paint(on, animate)
+        local tp = { BackgroundColor3 = on and T.toggleOn or T.toggleOff }
+        local kp = { Position = on and UDim2.new(1, -20, 0.5, 0) or UDim2.new(0, 2, 0.5, 0) }
+        if animate then
+            tween(track, ANIM_SPRING, tp); tween(knob, ANIM_BOUNCE, kp)
+        else
+            track.BackgroundColor3 = tp.BackgroundColor3; knob.Position = kp.Position
+        end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        paint(state, true)
+        if callback then callback(state) end
+    end)
+
+    return {
+        holder = holder,
+        setState = function(v) v = v == true; if state ~= v then state = v; paint(state, true) end end,
+        getState = function() return state end,
+    }
+end
+
+local function createSlider(parent, labelText, min, max, default, step, callback)
+    local value = math.clamp(default, min, max)
+    local holder = create("Frame", {
+        Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44),
+    })
+    local label = create("TextLabel", {
+        Parent = holder, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = labelText .. ": " .. tostring(value),
+        TextColor3 = T.textDim, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local trackFrame = create("Frame", {
+        Parent = holder, BackgroundColor3 = T.elevated,
+        Position = UDim2.new(0, 0, 0, 22), Size = UDim2.new(1, 0, 0, 14),
+    })
+    addCorner(trackFrame, 7); addStroke(trackFrame, T.border, 1)
+
+    local fill = create("Frame", {
+        Parent = trackFrame, BackgroundColor3 = T.accent,
+        Size = UDim2.new((value - min) / (max - min), 0, 1, 0),
+    })
+    addCorner(fill, 7)
+
+    local knobS = create("Frame", {
+        Parent = trackFrame, BackgroundColor3 = Color3.new(1, 1, 1),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new((value - min) / (max - min), 0, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 14),
+    })
+    addCorner(knobS, 7)
+
+    local inputBtn = create("TextButton", {
+        Parent = trackFrame, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0), Text = "", ZIndex = 5, AutoButtonColor = false,
+    })
+
+    local dragging = false
+    local function setVal(v)
+        v = math.clamp(v, min, max)
+        if step and step > 0 then
+            v = math.floor(v / step + 0.5) * step
+            v = math.clamp(v, min, max)
+        end
+        if math.abs(v - value) < 0.001 then return end
+        value = v
+        local pct = (value - min) / (max - min)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        knobS.Position = UDim2.new(pct, 0, 0.5, 0)
+        label.Text = labelText .. ": " .. (step >= 1 and tostring(math.floor(value)) or string.format("%.2f", value))
+        if callback then callback(value) end
+    end
+
+    local function updateFromInput(inputObj)
+        local absX = trackFrame.AbsolutePosition.X
+        local absW = trackFrame.AbsoluteSize.X
+        local rel = math.clamp((inputObj.Position.X - absX) / absW, 0, 1)
+        setVal(min + rel * (max - min))
+    end
+
+    inputBtn.MouseButton1Down:Connect(function() dragging = true end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            updateFromInput(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then dragging = false; updateFromInput(input); saveConfig() end
+        end
+    end)
+
+    return {
+        holder = holder, getValue = function() return value end,
+        setValue = function(v) setVal(v) end,
+    }
+end
+
+local function createDropdown(parent, labelText, options, defaultValue, callback)
+    local holder = create("Frame", {
+        Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30),
+    })
+    create("TextLabel", {
+        Parent = holder, BackgroundTransparency = 1,
+        Size = UDim2.new(0.45, 0, 1, 0), Font = Enum.Font.GothamMedium,
+        Text = labelText, TextColor3 = T.textDim, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local btn = create("TextButton", {
+        Parent = holder, BackgroundColor3 = T.elevated, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0.5, 0, 0, 26), Font = Enum.Font.GothamMedium,
+        Text = defaultValue, TextColor3 = T.text, TextSize = 12, AutoButtonColor = false,
+    })
+    addCorner(btn, 6); addStroke(btn, T.border, 1)
+
+    local currentVal = defaultValue
+    btn.MouseButton1Click:Connect(function()
+        local idx = 1
+        for i, opt in ipairs(options) do
+            if opt == currentVal then idx = i; break end
+        end
+        idx = idx % #options + 1
+        currentVal = options[idx]
+        btn.Text = currentVal
+        if callback then callback(currentVal) end
+    end)
+    return { holder = holder, getValue = function() return currentVal end }
+end
+
+local function createInputRow(sec, labelText, defaultVal, ord)
+    local row = create("Frame", {
+        Parent = sec, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 30), LayoutOrder = ord,
+    })
+    create("TextLabel", {
+        Parent = row, BackgroundTransparency = 1,
+        Size = UDim2.new(0.55, 0, 1, 0), Font = Enum.Font.GothamMedium,
+        Text = labelText, TextColor3 = T.textDim, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local box = create("TextBox", {
+        Parent = row, BackgroundColor3 = T.elevated, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0.4, 0, 0, 26), Font = Enum.Font.GothamMedium,
+        Text = tostring(defaultVal), TextColor3 = T.text, TextSize = 12,
+        ClearTextOnFocus = false,
+    })
+    addCorner(box, 6); addStroke(box, T.border, 1)
+    return box
+end
+
+local function createActionBtn(sec, text, color, ord)
+    local btn = create("TextButton", {
+        Parent = sec, BackgroundColor3 = color, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 34), Font = Enum.Font.GothamBold,
+        Text = text, TextColor3 = T.text, TextSize = 12, LayoutOrder = ord,
+        AutoButtonColor = false,
+    })
+    addCorner(btn, 8)
+    btn.MouseEnter:Connect(function()
+        tween(btn, ANIM_FAST, { BackgroundColor3 = Color3.new(
+            math.min(1, color.R + 0.08), math.min(1, color.G + 0.08), math.min(1, color.B + 0.08)) })
+    end)
+    btn.MouseLeave:Connect(function()
+        tween(btn, ANIM_FAST, { BackgroundColor3 = color })
+    end)
+    return btn
+end
+
+-- ============================================================
+--  ENGINE LOGIC
+-- ============================================================
+local blackHoleActive = false
+local followPlayer    = false
+local followMouse     = false
+local startMode, stopMode, restartMode
+local rebuildDrawGrid
+local allModeToggles = {}
+local forcedParts, lockedParts = {}, {}
+local claimedParts = {}
+local suctionPoints = {}
+local applySpinToLocked
+local Folder, CenterPart = nil, nil
+local anchorBasePos = nil
+local modeRenderConn = nil
+
+local function isFromPlayer(part)
+    if not part or not part.Parent then return false end
+    local model = part:FindFirstAncestorOfClass("Model")
+    if model and Players:GetPlayerFromCharacter(model) then return true end
+    local bp = {Head=1,Torso=1,HumanoidRootPart=1,UpperTorso=1,LowerTorso=1,
+        ["Left Arm"]=1,["Right Arm"]=1,["Left Leg"]=1,["Right Leg"]=1,
+        LeftUpperArm=1,RightUpperArm=1,LeftLowerArm=1,RightLowerArm=1,
+        LeftUpperLeg=1,RightUpperLeg=1,LeftLowerLeg=1,RightLowerLeg=1,
+        LeftHand=1,RightHand=1,LeftFoot=1,RightFoot=1,Handle=1}
+    if bp[part.Name] and part.Parent and part.Parent:FindFirstChildOfClass("Humanoid") then return true end
+    return false
+end
+
+local function getPlayerBasePos()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local b = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso")
+    return b and b.Position
+end
+
+local function getPlayerLookVector()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local lv = hrp.CFrame.LookVector
+        local fl = Vector3.new(lv.X, 0, lv.Z)
+        if fl.Magnitude > 0.01 then return fl.Unit end
+    end
+    return Vector3.new(0, 0, -1)
+end
+
+local function getMouseWorldPos()
+    local mouseLoc = UserInputService:GetMouseLocation()
+    local unitRay = Camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local fl = {Folder, LocalPlayer.Character}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then table.insert(fl, plr.Character) end
+    end
+    params.FilterDescendantsInstances = fl
+    local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * MOUSE_MAX_DIST, params)
+    if result then return result.Position end
+    return unitRay.Origin + unitRay.Direction * MOUSE_MAX_DIST
+end
+
+local function getBasePos()
+    if followMouse then return getMouseWorldPos() or getPlayerBasePos()
+    elseif followPlayer then return getPlayerBasePos()
+    else return anchorBasePos or getPlayerBasePos() end
+end
+
+local function getActiveTrackCount()
+    local n = 0
+    for _ in pairs(forcedParts) do n = n + 1 end
+    for _ in pairs(lockedParts) do n = n + 1 end
+    return n
+end
+
+local function buildAxes(mode)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local look = hrp and hrp.CFrame.LookVector or Camera.CFrame.LookVector
+    local fl = Vector3.new(look.X, 0, look.Z)
+    if fl.Magnitude < 0.001 then fl = Vector3.new(0, 0, -1) end
+    fl = fl.Unit
+    local right = fl:Cross(Vector3.new(0, 1, 0)).Unit
+    local up = mode == "horizontal" and fl or Vector3.new(0, 1, 0)
+    if rotated45 then
+        local a = math.rad(45) * TILT_SIGN
+        local co, si = math.cos(a), math.sin(a)
+        up = (up * co + right:Cross(up) * si).Unit
+    end
+    return right, up
+end
+
+local function gridToOffsets(g)
+    if not g then return nil end
+    local offs = {}
+    local N = g.N; local center = math.ceil(N / 2)
+    for r = 1, N do for c = 1, N do
+        if g.cells[r] and g.cells[r][c] then
+            table.insert(offs, Vector2.new((c - center) * SPACING, (center - r) * SPACING))
+        end
+    end end
+    return offs
+end
+
+local function getActiveOffsets()
+    if customGrid then
+        local o = gridToOffsets(customGrid)
+        if o and #o > 0 then return o end
+    end
+    return VORTEX_OFFSETS
+end
+
+local function nextPoint()
+    local best, bc = nil, math.huge
+    for _, pt in ipairs(suctionPoints) do
+        if #pt.holders < bc then best, bc = pt, #pt.holders end
+    end
+    return best
+end
+
+local function detachFromPoint(data, part)
+    if data and data.point then
+        local i = table.find(data.point.holders, part)
+        if i then table.remove(data.point.holders, i) end
+    end
+end
+
+local function releasePart(part, data)
+    if data then
+        if data.align  and data.align.Parent  then data.align:Destroy()  end
+        if data.orient and data.orient.Parent then data.orient:Destroy() end
+        if data.att    and data.att.Parent    then data.att:Destroy()    end
+    end
+    detachFromPoint(data, part)
+    claimedParts[part] = nil; lockedParts[part] = nil; forcedParts[part] = nil
+    if part and part.Parent then
+        part.CanCollide = true
+        part.AssemblyLinearVelocity = Vector3.zero
+        part.AssemblyAngularVelocity = Vector3.zero
+        part.CustomPhysicalProperties = nil -- Trả lại trọng lực để rơi xuống
+        pcall(function() part:SetNetworkOwner(nil) end)
+    end
+end
+
+local function lockPart(part, data)
+    data.state = "locked"
+    part.AssemblyLinearVelocity = Vector3.new(0, 0.01, 0)
+    if data.align and data.align.Parent then
+        data.align.RigidityEnabled = true
+        data.align.MaxVelocity = math.huge
+    end
+    forcedParts[part] = nil; lockedParts[part] = data
+end
+
+applySpinToLocked = function()
+    for part, _ in pairs(lockedParts) do
+        if part and part.Parent then
+            if partSpin then
+                part.AssemblyAngularVelocity = Vector3.new(0, SPIN_SPEED, 0)
+            else
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+end
+
+local function ForcePart(v)
+    if getActiveTrackCount() >= MAX_TRACK then return end
+    if not v:IsA("BasePart") or v.Anchored or v.Name == "Handle" then return end
+    if Folder and v:IsDescendantOf(Folder) then return end
+    if v:IsDescendantOf(LocalPlayer.Character or Folder) then return end
+    if isFromPlayer(v) or forcedParts[v] or claimedParts[v] or lockedParts[v] then return end
+    local basePos = anchorBasePos or getPlayerBasePos()
+    if not basePos or (v.Position - basePos).Magnitude > SCAN_RADIUS then return end
+    local pt = nextPoint(); if not pt then return end
+
+    for _, x in ipairs(v:GetChildren()) do
+        if x:IsA("BodyMover") or x:IsA("RocketPropulsion") then x:Destroy() end
+    end
+    for _, n in ipairs({"Attachment","AlignPosition","Torque","WeldConstraint"}) do
+        local c = v:FindFirstChild(n); if c then c:Destroy() end
+    end
+
+    -- Fling Bypass: Đẩy người chơi khác khỏi part để cướp Network Owner
+    if autoFlingBypass then
+        v.AssemblyLinearVelocity = Vector3.new(0, 99999, 0)
+        v.AssemblyAngularVelocity = Vector3.new(99999, 99999, 99999)
+    end
+
+    pcall(function() v:SetNetworkOwner(LocalPlayer) end)
+    v.CanCollide = false
+    Network.RetainPart(v)
+
+    local att = Instance.new("Attachment", v)
+    local ap = Instance.new("AlignPosition", v)
+    ap.MaxForce = math.huge; ap.MaxVelocity = MAX_VEL; ap.Responsiveness = 200
+    ap.Attachment0 = att; ap.Attachment1 = pt.attachment; ap.ApplyAtCenterOfMass = true
+    table.insert(pt.holders, v); claimedParts[v] = true
+    forcedParts[v] = {align=ap, att=att, point=pt, state="flying", orient=nil}
+end
+
+local function scanNearbyParts()
+    local basePos = anchorBasePos or getPlayerBasePos()
+    if not basePos then return end
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local fl = {Folder, LocalPlayer.Character}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then table.insert(fl, plr.Character) end
+    end
+    params.FilterDescendantsInstances = fl
+    for _, v in ipairs(Workspace:GetPartBoundsInRadius(basePos, SCAN_RADIUS, params)) do
+        if not v.Anchored and not forcedParts[v] and not claimedParts[v]
+            and not lockedParts[v] and not isFromPlayer(v) then
+            ForcePart(v)
+        end
+    end
+end
+
+local function tickFlying()
+    for part, data in pairs(forcedParts) do
+        if not part.Parent or isFromPlayer(part) then releasePart(part, data); continue end
+        local delta = data.point.part.Position - part.Position
+        if delta.Magnitude <= ARRIVE_DIST then
+            lockPart(part, data)
+        else
+            part.AssemblyLinearVelocity = delta.Unit * MAX_VEL
+            part.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+end
+
+local function tickHold()
+    for part, data in pairs(lockedParts) do
+        if not part.Parent or isFromPlayer(part) then
+            releasePart(part, data)
+        else
+            part.AssemblyLinearVelocity = Vector3.new(0, 0.01, 0)
+            if partSpin then
+                part.AssemblyAngularVelocity = Vector3.new(0, SPIN_SPEED, 0)
+            else
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+end
+
+-- ============================================================
+--  CLEAN BLOCK (SỬA ĐỂ PART TỰ RƠI XUỐNG ĐẤT)
+-- ============================================================
+local function cleanBlock()
+    if modeRenderConn then modeRenderConn:Disconnect(); modeRenderConn = nil end
+    pcall(function() LocalPlayer.ReplicationFocus = nil end)
+    Network.Active = false
+
+    for part, data in pairs(forcedParts) do releasePart(part, data) end
+    for part, data in pairs(lockedParts) do releasePart(part, data) end
+
+    -- Khôi phục trạng thái trọng lực và xoá khỏi Network loop
+    for part in pairs(Network.BaseParts) do
+        if part and part.Parent then
+            part.AssemblyLinearVelocity = Vector3.zero
+            part.AssemblyAngularVelocity = Vector3.zero
+            part.CustomPhysicalProperties = nil
+            part.CanCollide = true
+        end
+    end
+    table.clear(Network.BaseParts)
+
+    forcedParts, claimedParts, lockedParts = {}, {}, {}
+    if Folder and Folder.Parent then Folder:Destroy() end
+    Folder, CenterPart, suctionPoints, anchorBasePos = nil, nil, {}, nil
+end
+
+-- ============================================================
+--  BUILD SUCTION POINTS
+-- ============================================================
+local function createSuctionPart(parent, pos)
+    local p = Instance.new("Part", parent)
+    p.Name = "SP"; p.Anchored = true; p.CanCollide = false
+    p.Transparency = showPreview and 0.15 or 1
+    p.Size = MARKER_SIZE; p.Color = MARKER_COLOR
+    p.Material = MARKER_MAT; p.CastShadow = false
+    p.CFrame = CFrame.new(pos)
+    local att = Instance.new("Attachment", p)
+    return p, att
+end
+
+local function buildVortexPoints(basePos)
+    local right, up = buildAxes(orientation)
+    for i, off in ipairs(getActiveOffsets()) do
+        local pos = basePos + right * off.X + up * off.Y
+        local p, att = createSuctionPart(Folder, pos)
+        p.Name = "SP" .. i
+        table.insert(suctionPoints, {part=p, attachment=att, offset2D=off, holders={}, mode="vortex"})
+    end
+end
+
+local function buildTornadoPoints(basePos)
+    for ring = 1, TORNADO_RINGS do
+        local t = (ring - 1) / (TORNADO_RINGS - 1)
+        local y = t * TORNADO_HEIGHT
+        local r = TORNADO_BOT_RADIUS + t * (TORNADO_TOP_RADIUS - TORNADO_BOT_RADIUS)
+        for j = 1, TORNADO_PER_RING do
+            local angle = (j - 1) / TORNADO_PER_RING * math.pi * 2
+            local pos = basePos + Vector3.new(math.cos(angle) * r, y, math.sin(angle) * r)
+            local p, att = createSuctionPart(Folder, pos)
+            table.insert(suctionPoints, {
+                part=p, attachment=att, holders={}, mode="tornado",
+                ringIdx=ring, pointIdx=j, baseAngle=angle,
+                ringT=t, ringR=r, ringY=y,
+            })
+        end
+    end
+end
+
+local function buildRingPoints(basePos)
+    for j = 1, RING_POINTS do
+        local angle = (j - 1) / RING_POINTS * math.pi * 2
+        local pos = basePos + Vector3.new(math.cos(angle) * RING_RADIUS, RING_HEIGHT, math.sin(angle) * RING_RADIUS)
+        local p, att = createSuctionPart(Folder, pos)
+        table.insert(suctionPoints, {
+            part=p, attachment=att, holders={}, mode="ring",
+            pointIdx=j, baseAngle=angle,
+        })
+    end
+end
+
+local function buildSpherePoints(basePos)
+    for ring = 1, SPHERE_RINGS do
+        local lat = -math.pi/2 + (ring / (SPHERE_RINGS + 1)) * math.pi
+        local y = math.sin(lat) * SPHERE_RADIUS
+        local ringR = math.cos(lat) * SPHERE_RADIUS
+        for j = 1, SPHERE_PER_RING do
+            local lon = (j - 1) / SPHERE_PER_RING * math.pi * 2
+            local pos = basePos + Vector3.new(math.cos(lon) * ringR, y, math.sin(lon) * ringR)
+            local p, att = createSuctionPart(Folder, pos)
+            table.insert(suctionPoints, {
+                part=p, attachment=att, holders={}, mode="sphere",
+                ringIdx=ring, pointIdx=j, baseLon=lon, lat=lat,
+                ringR=ringR, ringY=y,
+            })
+        end
+    end
+end
+
+local function computeSinglePointPos(basePos)
+    local pos = basePos
+    if SP_ANCHOR == "front" then
+        local look = getPlayerLookVector()
+        pos = basePos + look * SP_OFFSET_DIST + Vector3.new(0, SP_OFFSET_UP, 0)
+    elseif SP_ANCHOR == "head" then
+        pos = basePos + Vector3.new(0, SP_OFFSET_DIST + SP_OFFSET_UP, 0)
+    elseif SP_ANCHOR == "feet" then
+        pos = basePos + Vector3.new(0, -SP_OFFSET_DIST + SP_OFFSET_UP, 0)
+    elseif SP_ANCHOR == "camera" then
+        local cf = Camera.CFrame
+        pos = cf.Position + cf.LookVector * SP_OFFSET_DIST + Vector3.new(0, SP_OFFSET_UP, 0)
+    elseif SP_ANCHOR == "mouse" then
+        pos = getMouseWorldPos() + Vector3.new(0, SP_OFFSET_UP, 0)
+    end
+    return pos
+end
+
+local function buildSinglePoint(basePos)
+    local pos = computeSinglePointPos(basePos)
+    local p, att = createSuctionPart(Folder, pos)
+    p.Name = "SP_Single"
+    table.insert(suctionPoints, {
+        part=p, attachment=att, holders={}, mode="single", baseAngle=0,
+    })
+end
+
+-- ============================================================
+--  DYNAMIC REPOSITIONING
+-- ============================================================
+local function repositionVortex(basePos)
+    if not Folder or not CenterPart then return end
+    local right, up = buildAxes(orientation)
+    CenterPart.CFrame = CFrame.new(basePos)
+    for _, pt in ipairs(suctionPoints) do
+        local o = pt.offset2D
+        pt.part.CFrame = CFrame.new(basePos + right * o.X + up * o.Y)
+    end
+end
+
+local tornadoTime = 0
+local function repositionTornado(basePos, dt)
+    if not Folder or not CenterPart then return end
+    CenterPart.CFrame = CFrame.new(basePos)
+    tornadoTime = tornadoTime + dt * TORNADO_SPIN_SPEED
+    for _, pt in ipairs(suctionPoints) do
+        local t = pt.ringT
+        local r = TORNADO_BOT_RADIUS + t * (TORNADO_TOP_RADIUS - TORNADO_BOT_RADIUS)
+        local y = t * TORNADO_HEIGHT
+        local angle = pt.baseAngle + tornadoTime * (1 + (1 - t) * 2)
+        pt.part.CFrame = CFrame.new(basePos + Vector3.new(math.cos(angle) * r, y, math.sin(angle) * r))
+    end
+end
+
+local ringTime = 0
+local function repositionRing(basePos, dt)
+    if not Folder or not CenterPart then return end
+    CenterPart.CFrame = CFrame.new(basePos)
+    ringTime = ringTime + dt * RING_SPIN_SPEED
+    for _, pt in ipairs(suctionPoints) do
+        local angle = pt.baseAngle + ringTime
+        pt.part.CFrame = CFrame.new(basePos + Vector3.new(
+            math.cos(angle) * RING_RADIUS, RING_HEIGHT, math.sin(angle) * RING_RADIUS))
+    end
+end
+
+local sphereTime = 0
+local function repositionSphere(basePos, dt)
+    if not Folder or not CenterPart then return end
+    CenterPart.CFrame = CFrame.new(basePos)
+    sphereTime = sphereTime + dt * SPHERE_SPIN_SPEED
+    for _, pt in ipairs(suctionPoints) do
+        local lon = pt.baseLon + sphereTime
+        local ringR = math.cos(pt.lat) * SPHERE_RADIUS
+        local y = math.sin(pt.lat) * SPHERE_RADIUS
+        pt.part.CFrame = CFrame.new(basePos + Vector3.new(
+            math.cos(lon) * ringR, y, math.sin(lon) * ringR))
+    end
+end
+
+local singleOrbitTime = 0
+local function repositionSingle(basePos, dt)
+    if not Folder or not CenterPart then return end
+    CenterPart.CFrame = CFrame.new(basePos)
+    local pos = computeSinglePointPos(basePos)
+    if SP_ORBIT then
+        singleOrbitTime = singleOrbitTime + dt * SP_ORBIT_SPEED
+        local r = math.abs(SP_OFFSET_DIST)
+        pos = basePos + Vector3.new(math.cos(singleOrbitTime) * r, SP_OFFSET_UP, math.sin(singleOrbitTime) * r)
+    end
+    for _, pt in ipairs(suctionPoints) do
+        pt.part.CFrame = CFrame.new(pos)
+    end
+end
+
+-- ============================================================
+--  START / STOP CONTROLLER
+-- ============================================================
+local function buildFolder(basePos)
+    Folder = Instance.new("Folder", Workspace); Folder.Name = "BringFolder"
+    CenterPart = Instance.new("Part", Folder)
+    CenterPart.Name = "Center"; CenterPart.Anchored = true; CenterPart.CanCollide = false
+    CenterPart.Transparency = 1; CenterPart.Size = Vector3.new(1, 1, 1)
+    CenterPart.CFrame = CFrame.new(basePos)
+    pcall(function() LocalPlayer.ReplicationFocus = CenterPart end)
+end
+
+local function startLoops()
+    task.spawn(function() while blackHoleActive do pcall(scanNearbyParts); task.wait(SCAN_INTERVAL) end end)
+    task.spawn(function() while blackHoleActive do pcall(tickFlying); task.wait(FLY_TICK) end end)
+    task.spawn(function() while blackHoleActive do pcall(tickHold); task.wait(HOLD_TICK) end end)
+end
+
+startMode = function(mode)
+    if blackHoleActive then stopMode() end
+    activeMode = mode
+    blackHoleActive = true
+    Network.Active = true
+
+    local basePos = getBasePos()
+    if not basePos then
+        blackHoleActive = false; activeMode = "none"; Network.Active = false
+        return false
+    end
+    anchorBasePos = basePos
+
+    buildFolder(basePos)
+    suctionPoints = {}
+    tornadoTime = 0; ringTime = 0; sphereTime = 0; singleOrbitTime = 0
+
+    if mode == "vortex" then buildVortexPoints(basePos)
+    elseif mode == "tornado" then buildTornadoPoints(basePos)
+    elseif mode == "ring" then buildRingPoints(basePos)
+    elseif mode == "sphere" then buildSpherePoints(basePos)
+    elseif mode == "single" then buildSinglePoint(basePos)
+    end
+
+    scanNearbyParts()
+    startLoops()
+
+    modeRenderConn = RunService.RenderStepped:Connect(function(dt)
+        if not blackHoleActive then return end
+        local bp = getBasePos()
+        if not bp then return end
+        anchorBasePos = bp
+
+        if mode == "vortex" then
+            if followPlayer or followMouse then pcall(repositionVortex, bp) end
+        elseif mode == "tornado" then pcall(repositionTornado, bp, dt)
+        elseif mode == "ring" then pcall(repositionRing, bp, dt)
+        elseif mode == "sphere" then pcall(repositionSphere, bp, dt)
+        elseif mode == "single" then pcall(repositionSingle, bp, dt)
+        end
+    end)
+
+    saveConfig()
+    return true
+end
+
+stopMode = function()
+    if not blackHoleActive then return end
+    blackHoleActive = false
+    activeMode = "none"
+    cleanBlock()
+    saveConfig()
+end
+
+restartMode = function()
+    local was = activeMode
+    if was == "none" then return end
+    stopMode()
+    task.wait(0.05)
+    startMode(was)
+end
+
+-- ============================================================
+--  SECTIONS & UI BUILDING
+-- ============================================================
+
+-- 1. MODE SELECT (Mở mặc định)
+local sec1 = createCollapsibleSection("⚡ MODE SELECT", true)
+local function disableAllModes(except)
+    for name, tog in pairs(allModeToggles) do
+        if name ~= except then tog.setState(false) end
+    end
+end
+
+allModeToggles["vortex"] = createToggle(sec1, "🌀 Vortex (Hình vẽ)", false, function(on)
+    disableAllModes("vortex")
+    if on then startMode("vortex") else stopMode() end
+end)
+allModeToggles["tornado"] = createToggle(sec1, "🌪️ Lốc Xoáy", false, function(on)
+    disableAllModes("tornado")
+    if on then startMode("tornado") else stopMode() end
+end)
+allModeToggles["ring"] = createToggle(sec1, "💫 Ring", false, function(on)
+    disableAllModes("ring")
+    if on then startMode("ring") else stopMode() end
+end)
+allModeToggles["sphere"] = createToggle(sec1, "🔵 Hình Cầu", false, function(on)
+    disableAllModes("sphere")
+    if on then startMode("sphere") else stopMode() end
+end)
+allModeToggles["single"] = createToggle(sec1, "🎯 Single Point (1 điểm)", false, function(on)
+    disableAllModes("single")
+    if on then startMode("single") else stopMode() end
+end)
+createToggle(sec1, "💥 Fling cướp Part bị dẫm", autoFlingBypass, function(on)
+    autoFlingBypass = on
+end)
+
+-- 2. FOLLOW (Mở mặc định)
+local sec_follow = createCollapsibleSection("📍 FOLLOW TARGET", true)
+local followToggle, mouseToggle
+followToggle = createToggle(sec_follow, "Đi theo Player", false, function(on)
+    followPlayer = on
+    if on and followMouse then followMouse = false; mouseToggle.setState(false) end
+    saveConfig()
+end)
+mouseToggle = createToggle(sec_follow, "Đi theo Chuột", false, function(on)
+    followMouse = on
+    if on and followPlayer then followPlayer = false; followToggle.setState(false) end
+    saveConfig()
+end)
+
+-- 3. VORTEX PARAMS (Mở mặc định)
+local sec_vortex = createCollapsibleSection("🌀 VORTEX PARAMS", true)
+local segBox   = createInputRow(sec_vortex, "Điểm (1–50)",       SEGMENTS,   1)
+local spaceBox = createInputRow(sec_vortex, "Khoảng cách",       SPACING,    2)
+local velBox   = createInputRow(sec_vortex, "Vận tốc (stud/s)",  MAX_VEL,    3)
+local spinBox  = createInputRow(sec_vortex, "Tốc độ xoay Part",  SPIN_SPEED, 4)
+
+createToggle(sec_vortex, "Xoay Part tại điểm hút", partSpin, function(on)
+    partSpin = on; saveConfig()
+    if applySpinToLocked then applySpinToLocked() end
+end)
+
+createToggle(sec_vortex, "Hiện Preview", showPreview, function(on)
+    showPreview = on; saveConfig()
+    for _, pt in ipairs(suctionPoints) do
+        if pt.part and pt.part.Parent then pt.part.Transparency = on and 0.15 or 1 end
+    end
+end)
+
+-- ⭐ 4. ORIENTATION (VORTEX) — PHẦN CHỈNH NGANG VÀ DỌC ĐÃ ĐƯỢC GIỮ NGUYÊN ĐẦY ĐỦ ⭐
+local sec_orient = createCollapsibleSection("🔄 ORIENTATION (VORTEX - NGANG / DỌC)", true)
+createToggle(sec_orient, "Ngang (Horizontal)", orientation == "horizontal", function(on)
+    orientation = on and "horizontal" or "vertical"; saveConfig()
+    if activeMode == "vortex" and blackHoleActive then restartMode() end
+end)
+
+createToggle(sec_orient, "Nghiêng 45°", rotated45, function(on)
+    rotated45 = on; saveConfig()
+    if activeMode == "vortex" and blackHoleActive then restartMode() end
+end)
+
+-- 5. TORNADO PARAMS (Thu gọn mặc định)
+local sec_tornado = createCollapsibleSection("🌪️ TORNADO PARAMS", false)
+createSlider(sec_tornado, "Tầng", 2, 30, TORNADO_RINGS, 1, function(v)
+    TORNADO_RINGS = math.floor(v)
+    if activeMode == "tornado" then restartMode() end
+end)
+createSlider(sec_tornado, "Điểm/tầng", 4, 40, TORNADO_PER_RING, 1, function(v)
+    TORNADO_PER_RING = math.floor(v)
+    if activeMode == "tornado" then restartMode() end
+end)
+createSlider(sec_tornado, "Chiều cao", 10, 300, TORNADO_HEIGHT, 5, function(v)
+    TORNADO_HEIGHT = v
+end)
+createSlider(sec_tornado, "Bán kính đỉnh", 5, 200, TORNADO_TOP_RADIUS, 1, function(v)
+    TORNADO_TOP_RADIUS = v
+end)
+createSlider(sec_tornado, "Bán kính đáy", 1, 100, TORNADO_BOT_RADIUS, 1, function(v)
+    TORNADO_BOT_RADIUS = v
+end)
+createSlider(sec_tornado, "Tốc độ xoay", 0.5, 50, TORNADO_SPIN_SPEED, 0.5, function(v)
+    TORNADO_SPIN_SPEED = v
+end)
+
+-- 6. RING PARAMS (Thu gọn mặc định)
+local sec_ring = createCollapsibleSection("💫 RING PARAMS", false)
+createSlider(sec_ring, "Bán kính", 5, 200, RING_RADIUS, 1, function(v)
+    RING_RADIUS = v
+end)
+createSlider(sec_ring, "Số điểm", 4, 60, RING_POINTS, 1, function(v)
+    RING_POINTS = math.floor(v)
+    if activeMode == "ring" then restartMode() end
+end)
+createSlider(sec_ring, "Tốc độ xoay", 0.5, 50, RING_SPIN_SPEED, 0.5, function(v)
+    RING_SPIN_SPEED = v
+end)
+createSlider(sec_ring, "Độ cao", -50, 50, RING_HEIGHT, 1, function(v)
+    RING_HEIGHT = v
+end)
+
+-- 7. SPHERE PARAMS (Thu gọn mặc định)
+local sec_sphere = createCollapsibleSection("🔵 SPHERE PARAMS", false)
+createSlider(sec_sphere, "Bán kính", 5, 200, SPHERE_RADIUS, 1, function(v)
+    SPHERE_RADIUS = v
+end)
+createSlider(sec_sphere, "Số vòng vĩ tuyến", 3, 20, SPHERE_RINGS, 1, function(v)
+    SPHERE_RINGS = math.floor(v)
+    if activeMode == "sphere" then restartMode() end
+end)
+createSlider(sec_sphere, "Điểm/vòng", 4, 30, SPHERE_PER_RING, 1, function(v)
+    SPHERE_PER_RING = math.floor(v)
+    if activeMode == "sphere" then restartMode() end
+end)
+createSlider(sec_sphere, "Tốc độ xoay", 0, 20, SPHERE_SPIN_SPEED, 0.5, function(v)
+    SPHERE_SPIN_SPEED = v
+end)
+
+-- 8. SINGLE POINT PARAMS (Thu gọn mặc định)
+local sec_single = createCollapsibleSection("🎯 SINGLE POINT PARAMS", false)
+createDropdown(sec_single, "Vị trí neo", {"front", "head", "feet", "camera", "mouse"}, SP_ANCHOR, function(v)
+    SP_ANCHOR = v; saveConfig()
+end)
+createSlider(sec_single, "Khoảng cách", -50, 100, SP_OFFSET_DIST, 1, function(v)
+    SP_OFFSET_DIST = v
+end)
+createSlider(sec_single, "Nâng cao/thấp (Y)", -50, 50, SP_OFFSET_UP, 1, function(v)
+    SP_OFFSET_UP = v
+end)
+createToggle(sec_single, "Giữ chặt (Tight lock)", SP_TIGHT, function(on)
+    SP_TIGHT = on; saveConfig()
+end)
+createToggle(sec_single, "Xoay quanh người chơi", SP_ORBIT, function(on)
+    SP_ORBIT = on; saveConfig()
+end)
+createSlider(sec_single, "Tốc độ xoay quỹ đạo", 0, 20, SP_ORBIT_SPEED, 0.5, function(v)
+    SP_ORBIT_SPEED = v
+end)
+
+-- 9. PHÍM TẮT & BẢNG VẼ
+local sec_tools = createCollapsibleSection("🛠️ PHÍM TẮT & VẼ HÌNH", true)
+local keyBtn = createActionBtn(sec_tools, "Bind: " .. (bringKey and bringKey.Name or "None"), T.elevated, 1)
+local drawBtn = createActionBtn(sec_tools, "🎨 Mở bảng vẽ", T.accent, 2)
+
+-- ============================================================
+--  DRAW PANEL & FULL 12 PRESETS (GIỮ ĐỦ 100% 12 HÌNH VẼ)
+-- ============================================================
+local DrawPanel = create("Frame", {
+    Parent = Gui, BackgroundColor3 = T.bg, BorderSizePixel = 0,
+    Position = UDim2.new(0.5, -210, 0.5, -290),
+    Size = UDim2.new(0, 420, 0, 580), Active = true, Draggable = true,
+    Visible = false, ZIndex = 20, ClipsDescendants = true,
+})
+addCorner(DrawPanel, 12); addStroke(DrawPanel, T.border, 1.2)
+
+local drawTitleBar = create("Frame", {
+    Parent = DrawPanel, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Size = UDim2.new(1, 0, 0, 40), ZIndex = 21,
+})
+addCorner(drawTitleBar, 12)
+create("Frame", {
+    Parent = drawTitleBar, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Position = UDim2.new(0, 0, 1, -12), Size = UDim2.new(1, 0, 0, 12), ZIndex = 21,
+})
+
+local DrawTitle = create("TextLabel", {
+    Parent = drawTitleBar, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -50, 1, 0),
+    Font = Enum.Font.GothamBold, Text = "🎨 Vẽ hình",
+    TextColor3 = T.text, TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 22,
+})
+
+local drawCloseBtn = create("TextButton", {
+    Parent = drawTitleBar, BackgroundColor3 = T.red, BorderSizePixel = 0,
+    Position = UDim2.new(1, -30, 0.5, -10), Size = UDim2.new(0, 20, 0, 20),
+    Font = Enum.Font.GothamBold, Text = "✕",
+    TextColor3 = Color3.new(1, 1, 1), TextSize = 11, ZIndex = 22,
+})
+addCorner(drawCloseBtn, 6)
+
+create("TextLabel", {
+    Parent = DrawPanel, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 14, 0, 44), Size = UDim2.new(1, -28, 0, 16),
+    Font = Enum.Font.Gotham,
+    Text = "Giữ chuột + lướt để tô. Chọn mẫu hoặc vẽ tự do.",
+    TextColor3 = T.textDim, TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 21,
+})
+
+local presetFrame = create("Frame", {
+    Parent = DrawPanel, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Position = UDim2.new(0, 14, 0, 64), Size = UDim2.new(1, -28, 0, 72), ZIndex = 21,
+})
+addCorner(presetFrame, 8); addStroke(presetFrame, T.border, 1)
+
+create("TextLabel", {
+    Parent = presetFrame, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 10, 0, 2), Size = UDim2.new(1, -20, 0, 16),
+    Font = Enum.Font.GothamBold, Text = "📐 Mẫu hình",
+    TextColor3 = T.accent, TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 22,
+})
+
+local presetScroll = create("ScrollingFrame", {
+    Parent = presetFrame, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 6, 0, 20), Size = UDim2.new(1, -12, 1, -24),
+    CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.X,
+    ScrollBarThickness = 2, ScrollBarImageColor3 = T.accent,
+    ScrollingDirection = Enum.ScrollingDirection.X, BorderSizePixel = 0, ZIndex = 22,
+})
+create("UIListLayout", {
+    Parent = presetScroll, FillDirection = Enum.FillDirection.Horizontal,
+    SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6),
+})
+
+local GridFrame = create("Frame", {
+    Parent = DrawPanel, BackgroundColor3 = T.surface, BorderSizePixel = 0,
+    Position = UDim2.new(0.5, 0, 0, 144), AnchorPoint = Vector2.new(0.5, 0),
+    Size = UDim2.new(0, 340, 0, 340), ZIndex = 21,
+})
+addCorner(GridFrame, 8); addStroke(GridFrame, T.border, 1)
+
+local GridLayout = create("UIGridLayout", {
+    Parent = GridFrame, CellSize = UDim2.new(0, 30, 0, 30),
+    CellPadding = UDim2.new(0, 1, 0, 1),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+})
+local gPad = Instance.new("UIPadding", GridFrame)
+gPad.PaddingTop = UDim.new(0, 4); gPad.PaddingBottom = UDim.new(0, 4)
+gPad.PaddingLeft = UDim.new(0, 4); gPad.PaddingRight = UDim.new(0, 4)
+
+local bottomRow = create("Frame", {
+    Parent = DrawPanel, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 14, 1, -52), Size = UDim2.new(1, -28, 0, 40), ZIndex = 21,
+})
+create("UIListLayout", {
+    Parent = bottomRow, FillDirection = Enum.FillDirection.Horizontal,
+    SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8),
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+})
+
+local clearBtn = create("TextButton", {
+    Parent = bottomRow, BackgroundColor3 = T.orange, BorderSizePixel = 0,
+    Size = UDim2.new(0, 110, 0, 36), Font = Enum.Font.GothamBold,
+    Text = "🗑️ Xoá hết", TextColor3 = T.text, TextSize = 12,
+    ZIndex = 22, LayoutOrder = 1, AutoButtonColor = false,
+})
+addCorner(clearBtn, 8)
+
+local cancelBtn = create("TextButton", {
+    Parent = bottomRow, BackgroundColor3 = T.red, BorderSizePixel = 0,
+    Size = UDim2.new(0, 100, 0, 36), Font = Enum.Font.GothamBold,
+    Text = "✕ Huỷ", TextColor3 = T.text, TextSize = 12,
+    ZIndex = 22, LayoutOrder = 2, AutoButtonColor = false,
+})
+addCorner(cancelBtn, 8)
+
+local doneBtn = create("TextButton", {
+    Parent = bottomRow, BackgroundColor3 = T.green, BorderSizePixel = 0,
+    Size = UDim2.new(0, 110, 0, 36), Font = Enum.Font.GothamBold,
+    Text = "✓ Done", TextColor3 = T.bg, TextSize = 12,
+    ZIndex = 22, LayoutOrder = 3, AutoButtonColor = false,
+})
+addCorner(doneBtn, 8)
+
+-- ============================================================
+--  ĐỦ 100% 12 HÌNH VẼ PRESETS THEO BẢN GỐC
+-- ============================================================
+local function generatePreset(name, N)
+    local grid = {}
+    for r = 1, N do grid[r] = {}; for c = 1, N do grid[r][c] = false end end
+    local center = math.ceil(N / 2)
+    local radius = (N - 1) / 2
+
+    if name == "Vortex" then
+        local S = SPACING
+        local segs = math.floor((N - 1) / 2)
+        for arm = 1, 4 do
+            local baseAngle = (arm - 1) * (math.pi / 2)
+            for i = 1, segs do
+                local dist = i * S
+                local angle = baseAngle + (i * 0.12)
+                local off = Vector2.new(math.cos(angle) * dist, math.sin(angle) * dist)
+                local col = math.floor(off.X / S + 0.5) + center
+                local row = center - math.floor(off.Y / S + 0.5)
+                if row >= 1 and row <= N and col >= 1 and col <= N then grid[row][col] = true end
+            end
+        end
+    elseif name == "Circle" then
+        for r = 1, N do for c = 1, N do
+            if math.sqrt((c-center)^2 + (r-center)^2) <= radius + 0.3 then grid[r][c] = true end
+        end end
+    elseif name == "Ring" then
+        for r = 1, N do for c = 1, N do
+            local d = math.sqrt((c-center)^2 + (r-center)^2)
+            if d <= radius + 0.3 and d >= radius - 1.5 then grid[r][c] = true end
+        end end
+    elseif name == "Square" then
+        for r = 1, N do for c = 1, N do grid[r][c] = true end end
+    elseif name == "Frame" then
+        for r = 1, N do for c = 1, N do
+            if r==1 or r==N or c==1 or c==N then grid[r][c] = true end
+        end end
+    elseif name == "Diamond" then
+        for r = 1, N do for c = 1, N do
+            if math.abs(r-center)+math.abs(c-center) <= radius then grid[r][c] = true end
+        end end
+    elseif name == "Cross" then
+        for i = 1, N do grid[center][i] = true; grid[i][center] = true end
+    elseif name == "X" then
+        for i = 1, N do grid[i][i] = true; grid[i][N-i+1] = true end
+    elseif name == "Star" then
+        for i = 1, N do
+            grid[center][i] = true; grid[i][center] = true
+            grid[i][i] = true; grid[i][N-i+1] = true
+        end
+    elseif name == "Heart" then
+        for r = 1, N do for c = 1, N do
+            local x = (c-center)/radius; local y = -(r-center)/radius
+            if (x*x+y*y-1)^3 - x*x*y*y*y <= 0 then grid[r][c] = true end
+        end end
+    elseif name == "Arrow" then
+        for i = 1, N do grid[i][center] = true end
+        for i = 1, math.ceil(radius) do
+            if center-i >= 1 then grid[i][center-i] = true end
+            if center+i <= N then grid[i][center+i] = true end
+        end
+    elseif name == "Triangle" then
+        for r = 1, N do
+            local halfW = math.floor((r-1)*radius/(N-1))
+            for c = center-halfW, center+halfW do
+                if c >= 1 and c <= N then grid[r][c] = true end
+            end
+        end
+    end
+    return grid
+end
+
+local presetNames = {"Vortex","Circle","Ring","Square","Frame","Diamond","Cross","X","Star","Heart","Arrow","Triangle"}
+local presetIcons = {"🌀","●","◎","■","□","◆","✚","✕","✦","♥","▲","▲"}
+
+local drawGrid, drawN, cellBtns = {}, 0, {}
+local isMouseDown, paintMode = false, nil
+
+local function refreshCellVisual(btn, on)
+    tween(btn, ANIM_FAST, { BackgroundColor3 = on and T.cellOn or T.cellOff })
+end
+
+rebuildDrawGrid = function()
+    for _, b in ipairs(cellBtns) do b:Destroy() end
+    cellBtns = {}; drawGrid = {}; drawN = 2 * SEGMENTS + 1
+
+    DrawTitle.Text = string.format("🎨 Vẽ hình • %d × %d", drawN, drawN)
+
+    local frameSize = 332
+    local pad = 1
+    local cell = math.floor((frameSize - pad * (drawN - 1) - 8) / drawN)
+    cell = math.max(2, math.min(36, cell))
+    GridLayout.CellSize = UDim2.new(0, cell, 0, cell)
+    GridLayout.CellPadding = UDim2.new(0, pad, 0, pad)
+    local realSize = cell * drawN + pad * (drawN - 1) + 8
+    GridFrame.Size = UDim2.new(0, realSize, 0, realSize)
+
+    for r = 1, drawN do drawGrid[r] = {}; for c = 1, drawN do drawGrid[r][c] = false end end
+
+    local center = math.ceil(drawN / 2)
+    if customGrid and customGrid.N == drawN then
+        for r = 1, drawN do for c = 1, drawN do
+            if customGrid.cells[r] and customGrid.cells[r][c] then drawGrid[r][c] = true end
+        end end
+    else
+        for _, off in ipairs(VORTEX_OFFSETS) do
+            local col = math.floor(off.X / SPACING + 0.5) + center
+            local row = center - math.floor(off.Y / SPACING + 0.5)
+            if row >= 1 and row <= drawN and col >= 1 and col <= drawN then drawGrid[row][col] = true end
+        end
+    end
+
+    local ord = 1
+    for r = 1, drawN do for c = 1, drawN do
+        local btn = create("TextButton", {
+            Parent = GridFrame, BorderSizePixel = 0, Text = "",
+            AutoButtonColor = false, LayoutOrder = ord, ZIndex = 22,
+            BackgroundColor3 = drawGrid[r][c] and T.cellOn or T.cellOff,
+        })
+        addCorner(btn, math.max(1, math.floor(cell / 6)))
+        ord = ord + 1
+        local rr, cc = r, c
+        btn.MouseButton1Down:Connect(function()
+            isMouseDown = true
+            paintMode = not drawGrid[rr][cc]
+            drawGrid[rr][cc] = paintMode
+            refreshCellVisual(btn, paintMode)
+        end)
+        btn.MouseEnter:Connect(function()
+            if isMouseDown and paintMode ~= nil then
+                drawGrid[rr][cc] = paintMode
+                refreshCellVisual(btn, paintMode)
+            end
+        end)
+        table.insert(cellBtns, btn)
+    end end
+end
+
+local function applyPresetToGrid(pg)
+    local idx = 1
+    for r = 1, drawN do for c = 1, drawN do
+        local on = pg[r] and pg[r][c] or false
+        drawGrid[r][c] = on
+        if cellBtns[idx] then refreshCellVisual(cellBtns[idx], on) end
+        idx = idx + 1
+    end end
+end
+
+for i, name in ipairs(presetNames) do
+    local pb = create("TextButton", {
+        Parent = presetScroll, BackgroundColor3 = T.elevated,
+        BorderSizePixel = 0, Size = UDim2.new(0, 60, 0, 44),
+        Font = Enum.Font.GothamBold, Text = "",
+        LayoutOrder = i, ZIndex = 23, AutoButtonColor = false,
+    })
+    addCorner(pb, 8)
+    create("TextLabel", {
+        Parent = pb, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 24), Font = Enum.Font.GothamBold,
+        Text = presetIcons[i] or "?", TextColor3 = T.accent,
+        TextSize = 16, ZIndex = 24,
+    })
+    create("TextLabel", {
+        Parent = pb, BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 24), Size = UDim2.new(1, 0, 0, 18),
+        Font = Enum.Font.Gotham, Text = name,
+        TextColor3 = T.textDim, TextSize = 9, ZIndex = 24,
+    })
+    pb.MouseEnter:Connect(function() tween(pb, ANIM_FAST, { BackgroundColor3 = T.accent }) end)
+    pb.MouseLeave:Connect(function() tween(pb, ANIM_FAST, { BackgroundColor3 = T.elevated }) end)
+    pb.MouseButton1Click:Connect(function()
+        if drawN > 0 then applyPresetToGrid(generatePreset(name, drawN)) end
+    end)
+end
+
+-- ============================================================
+--  INPUT BOX EVENTS
+-- ============================================================
+segBox.FocusLost:Connect(function()
+    local n = tonumber(segBox.Text)
+    if n and n >= 1 and n <= 50 then
+        local v = math.floor(n)
+        if v ~= SEGMENTS then
+            SEGMENTS = v
+            VORTEX_OFFSETS = buildVortexOffsets()
+            if customGrid and customGrid.N ~= (2*SEGMENTS+1) then customGrid = nil end
+            if DrawPanel.Visible then rebuildDrawGrid() end
+            if activeMode == "vortex" and blackHoleActive then restartMode() end
+            saveConfig()
+        end
+    end
+    segBox.Text = tostring(SEGMENTS)
+end)
+
+spaceBox.FocusLost:Connect(function()
+    local n = tonumber(spaceBox.Text)
+    if n and n >= 2 and n <= 200 then
+        local v = math.floor(n)
+        if v ~= SPACING then
+            SPACING = v
+            VORTEX_OFFSETS = buildVortexOffsets()
+            if activeMode == "vortex" and blackHoleActive then restartMode() end
+            saveConfig()
+        end
+    end
+    spaceBox.Text = tostring(SPACING)
+end)
+
+velBox.FocusLost:Connect(function()
+    local n = tonumber(velBox.Text)
+    if n and n >= 0.1 and n <= 500 then
+        if n ~= MAX_VEL then
+            MAX_VEL = n
+            for _, d in pairs(forcedParts) do
+                if d.align and d.align.Parent then d.align.MaxVelocity = MAX_VEL end
+            end
+            saveConfig()
+        end
+    end
+    velBox.Text = tostring(MAX_VEL)
+end)
+
+spinBox.FocusLost:Connect(function()
+    local n = tonumber(spinBox.Text)
+    if n and n >= 0.1 and n <= 100 then
+        if n ~= SPIN_SPEED then
+            SPIN_SPEED = n
+            if applySpinToLocked then applySpinToLocked() end
+            saveConfig()
+        end
+    end
+    spinBox.Text = tostring(SPIN_SPEED)
+end)
+
+-- ============================================================
+--  HOTKEY & REBINDING
+-- ============================================================
+local isRebinding = false
+keyBtn.MouseButton1Click:Connect(function()
+    isRebinding = true
+    tween(keyBtn, ANIM_FAST, { BackgroundColor3 = T.orange })
+    keyBtn.Text = "Nhấn phím... (ESC = None)"
+end)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe or UserInputService:GetFocusedTextBox() then return end
+    if isRebinding then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode == Enum.KeyCode.Escape then
+                bringKey = nil; keyBtn.Text = "Bind: None"
+            else
+                bringKey = input.KeyCode; keyBtn.Text = "Bind: " .. bringKey.Name
+            end
+            tween(keyBtn, ANIM_FAST, { BackgroundColor3 = T.elevated })
+            isRebinding = false; saveConfig()
+        end
+        return
+    end
+    if bringKey and input.KeyCode == bringKey then
+        if blackHoleActive then
+            stopMode()
+            for name, tog in pairs(allModeToggles) do tog.setState(false) end
+        else
+            local m = activeMode == "none" and "vortex" or activeMode
+            disableAllModes(m)
+            allModeToggles[m].setState(true)
+            startMode(m)
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isMouseDown = false; paintMode = nil
+    end
+end)
+
+-- ============================================================
+--  BUTTON TRIGGERS & MINIMIZE / REOPEN
+-- ============================================================
+drawBtn.MouseButton1Click:Connect(function()
+    pcall(rebuildDrawGrid)
+    DrawPanel.Visible = true
+    DrawPanel.Position = UDim2.new(0.5, -210, 0.5, -310)
+    tween(DrawPanel, ANIM_SPRING, { Position = UDim2.new(0.5, -210, 0.5, -290) })
+end)
+
+drawCloseBtn.MouseButton1Click:Connect(function() DrawPanel.Visible = false end)
+cancelBtn.MouseButton1Click:Connect(function() DrawPanel.Visible = false end)
+
+clearBtn.MouseButton1Click:Connect(function()
+    for r = 1, drawN do for c = 1, drawN do drawGrid[r][c] = false end end
+    local idx = 1
+    for r = 1, drawN do for c = 1, drawN do
+        if cellBtns[idx] then refreshCellVisual(cellBtns[idx], false) end
+        idx = idx + 1
+    end end
+end)
+
+doneBtn.MouseButton1Click:Connect(function()
+    local cnt = 0
+    for r = 1, drawN do for c = 1, drawN do if drawGrid[r][c] then cnt = cnt + 1 end end end
+    if cnt == 0 then customGrid = nil
+    else
+        local cells = {}
+        for r = 1, drawN do cells[r] = {}; for c = 1, drawN do cells[r][c] = drawGrid[r][c] end end
+        customGrid = {N = drawN, cells = cells}
+    end
+    DrawPanel.Visible = false; saveConfig()
+    if activeMode == "vortex" and blackHoleActive then restartMode() end
+end)
+
+local reopenBtn = create("TextButton", {
+    Parent = Gui, BackgroundColor3 = T.accent, BorderSizePixel = 0,
+    Position = UDim2.new(0, 16, 0.5, -20), Size = UDim2.new(0, 44, 0, 44),
+    Font = Enum.Font.GothamBold, Text = "⚡",
+    TextColor3 = Color3.new(1, 1, 1), TextSize = 20, Visible = false,
+    AutoButtonColor = false,
+})
+addCorner(reopenBtn, 22); addStroke(reopenBtn, T.border, 1.2)
+
+minBtn.MouseButton1Click:Connect(function()
+    tween(Main, ANIM_SPRING, { Size = UDim2.new(0, 380, 0, 0) })
+    task.wait(0.35); Main.Visible = false; reopenBtn.Visible = true
+end)
+
+reopenBtn.MouseButton1Click:Connect(function()
+    Main.Visible = true; Main.Size = UDim2.new(0, 380, 0, 0)
+    tween(Main, ANIM_SPRING, { Size = UDim2.new(0, 380, 0, 700) })
+    reopenBtn.Visible = false
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    stopMode()
+    tween(Main, ANIM_FAST, { Size = UDim2.new(0, 380, 0, 0) })
+    task.wait(0.2)
+    Gui:Destroy()
+end)
+
+Main.Size = UDim2.new(0, 380, 0, 0)
+task.wait(0.05)
+tween(Main, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    Size = UDim2.new(0, 380, 0, 700)
+})
+
+print("[Bring Vortex v5.5] Full Edition Loaded Successfully.")
